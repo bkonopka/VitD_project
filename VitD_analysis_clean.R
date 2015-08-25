@@ -6,6 +6,9 @@ require(chemometrics)
 require(gplots)
 require(haplo.stats)
 require(MASS)
+require(glmnet)
+require(plyr)
+require(Hmisc)
 source("DataAnalysis_BK.R")
 
 
@@ -477,37 +480,109 @@ genData.c.num<-genData.c.bin*diff(scalingRange_25_75)+scalingRange_25_75[1]
 T.lm_data.N<-data.frame(numNonGen_Numerized_m_noOut_25_75[!genData.Miss,c(4,1:3,5:dim(numNonGen_Numerized_m_noOut_25_75)[2])],genData.c.num)
 T.rlm_data.N<-T.lm_data.N[,-sing]
 
-T.lm_n1<-lm(T.rlm_formula,data=T.lm_data.N,subset=unlist(cv[-1]))
-T.lm_n2<-lm(T.rlm_formula,data=T.lm_data.N,subset=unlist(cv[-2]))
-T.lm_n3<-lm(T.rlm_formula,data=T.lm_data.N,subset=unlist(cv[-3]))
-T.lm_n4<-lm(T.rlm_formula,data=T.lm_data.N,subset=unlist(cv[-4]))
-
-T.rlm_data.N<-T.lm_data.N[,-sing]
-T.rlm_n1<-rlm(T.rlm_formula,data=T.lm_data.N,subset=unlist(cv[-1]),init = T.lm_n1$coefficients)
-T.rlm_n2<-rlm(T.rlm_formula,data=T.lm_data.N,subset=unlist(cv[-2]),init = T.lm_n1$coefficients)
-T.rlm_n3<-rlm(T.rlm_formula,data=T.lm_data.N,subset=unlist(cv[-3]),init = T.lm_n1$coefficients)
-T.rlm_n4<-rlm(T.rlm_formula,data=T.lm_data.N,subset=unlist(cv[-4]),init = T.lm_n1$coefficients)
 
 #Bez skalowania danych genetycznych i niegenetycznych danych binarnych.
-T.final_data<-data.frame(numData_m_noOut[!genData.Miss,],nonGenData_m_noOut[!genData.Miss,],genData.c.bin)
+T.final_data<-data.frame(numDataNorm_m_noOut[!genData.Miss,],nonGenData_m_noOut[!genData.Miss,],genData.c.bin)
 T.final_data<-T.final_data[,c(4,1:3,5:55)] # testosteron na pierwszej pozycji
-rm_col<-c(7,29,46,49,52,55,35,41,30)#wynikaja z tego, ze 0 we wczesniejszych kolumnach juz definiuja co bedzie w tych + hyperandrogenism + FAI
+names(T.final_data)
+rm_col<-c(7,29,35,41,30,46,49,52,55)#wynikaja z tego, ze 0 we wczesniejszych kolumnach juz definiuja co bedzie w tych + hyperandrogenism + FAI
+#rm_col<-c(7,30)#usuniecie FAI i hyperandrogenizmu - 
 T.final_data<-T.final_data[,-rm_col]
+T.final_data<-T.final_data[!(cN.c$cl4==4 | cN.c$cl4==3 ),]#Usuniecie pacjentow z podywzszonym FSH - zaborzone funkcjonowanie jader
+#T.final_data<-T.final_data[!(cN.c$cl4==4),]
 T.final_formula<-formula(T.final_data)
 
-T.init.lm<-lm(formula=T.final_formula,data=T.final_data,subset=sample(1:193,120))#inicjalizacja parametrów dla rlm
+T.init.lm<-lm(formula=T.final_formula,data=T.final_data,subset=sample(1:(dim(T.final_data)[1]),round(3/4*(dim(T.final_data)[1]))))#inicjalizacja parametrów dla rlm
 T.init.lm<-coef(T.init.lm)			
-T.final_rlm<-BK_lm(formula=T.rlm_formula,data=T.rlm_data,K=10,init=T.init.lm,method="rlm")
-T.final_lm<-BK_lm(formula=T.rlm_formula,data=T.rlm_data,K=10,method="lm")
+T.final_rlm<-BK_lm(formula=T.final_formula,data=T.final_data,K=10,init=T.init.lm,method="rlm")
+T.final_lm<-BK_lm(formula=T.final_formula,data=T.final_data,K=10,method="lm")
+#Rysowanie
+par(mar=c(9,4,2,2))
+# ord<-order(T.final_lm$coef.mean$Mean.coef,decreasing=T)
+#ord<-1:length(T.final_lm$coef.mean$Mean.coef)
+ord<-order(T.final_rlm$coef.mean$p.value)
+plot.bar<-data.frame(T.final_lm$coef.mean$Mean.coef[ord],T.final_rlm$coef.mean$Mean.coef[ord])
+plot.CI_low<-data.frame(T.final_lm$coef.mean$CI_low[ord],T.final_rlm$coef.mean$CI_low[ord])
+plot.CI_high<-data.frame(T.final_lm$coef.mean$CI_high[ord],T.final_rlm$coef.mean$CI_high[ord])
+barp<-barplot(as.matrix(t(plot.bar)),names.arg=row.names(T.final_lm$coef.mean)[ord],col=c("red","blue"),beside=T,las=2,cex.names=0.65,ylim=c(-1,1),legend.text=c("Ordinary Least Squares","Tukey's Linear Model"))
+errbar(barp,t(plot.bar),yplus=t(plot.CI_high),yminus=t(plot.CI_low),add=T,type="n",cap=0.01)
+#FORWARD FEATURE SELECTION
+T.lm.step.forward<-BK_cv_step(formula=TESTOSTERON~.0,data=T.final_data,direction="forward",K = 10,scope=T.final_formula)
 
-VitD.final_data<-data.frame(numData_m_noOut[!genData.Miss,],nonGenData_m_noOut[!genData.Miss,],genData.c.bin)
-VitD.final_data<-VitD.final_data[,c(21,1:20,22:55)]
+
+#BACKWARD FEATURE SELECTION
+T.lm_step.backward<-BK_cv_step(formula=T.final_formula,data=T.final_data,direction="backward",K = 10,scope=T.final_formula)
+
+
+#LASSO REGRESSION
+
+T.final_data_lasso<-data.frame(numDataNorm_m_noOut[!genData.Miss,],nonGenData_m_noOut[!genData.Miss,],genData.c.bin)
+T.final_data_lasso<-T.final_data_lasso[,c(4,1:3,5:55)] # testosteron na pierwszej pozycji
+rm_col<-c(7,30)#usuniecie FAI i hyperandrogenizmu
+T.final_data_lasso<-T.final_data_lasso[,-rm_col]
+T.final_data_lasso<-T.final_data_lasso[!(cN.c$cl4==4 | cN.c$cl4==3 ),]#Usuniecie pacjentow z podywzszonym FSH - zaborzone funkcjonowanie jad
+#T.final_data_lasso<-T.final_data_lasso[!(cN.c$cl4==4 ),]
+T.final_lasso<- cv.glmnet(as.matrix(T.final_data_lasso[,-1]), T.final_data_lasso$TESTOSTERON,standardize=FALSE)
+
+#Podsumowanie korelacji Testosteronu:
+T.final_lasso_coef<-data.frame(as.matrix(coefficients(T.final_lasso,s="lambda.min")),as.matrix(coefficients(T.final_lasso,s="lambda.1se")))
+
+
+#*************
+VitD.final_data<-data.frame(numDataNorm_m_noOut[!genData.Miss,],nonGenData_m_noOut[!genData.Miss,],genData.c.bin)
+VitD.final_data<-VitD.final_data[,c(21,1:20,22:55)]#Witamina D jako pierwsza kolumna
 VitD.rm_col<-c(29,35,41,46,49,52,55) #usuniecie nadmiarowych kolumn - MAKROREGIONwschodni,PORY.ROKUzima,FENOTYP.OTYLOSCI.FELAOMWD,+ genetyczne
 VitD.final_data<-VitD.final_data[,-VitD.rm_col]
-VitD.lm_formula<-formula(VitD.final_data)
+VitD.final_data<-VitD.final_data[!(cN.c$cl4==4 | cN.c$cl4==3 ),]
+VitD.final_formula<-formula(VitD.final_data)
 
-VitD.lm<-BK_lm(formula=VitD.lm_formula,data=VitD.final_data,K = 10)
-VitD.rlm<-BK_lm(formula=VitD.lm_formula,data=VitD.final_data,K = 10,init=coef(VitD.lm$model.list$m2),method="rlm")
+VitD.final_lm<-BK_lm(formula=VitD.final_formula,data=VitD.final_data,K = 10)
+VitD.final_rlm<-BK_lm(formula=VitD.final_formula,data=VitD.final_data,K = 10,init=coef(VitD.final_lm$model.list$m2),method="rlm")
+
+
+#Rysowanie
+par(mar=c(9,4,2,2))
+# ord<-order(T.final_lm$coef.mean$Mean.coef,decreasing=T)
+#ord<-1:length(T.final_lm$coef.mean$Mean.coef)
+ord<-order(VitD.final_rlm$coef.mean$p.value)
+plot.bar<-data.frame(VitD.final_lm$coef.mean$Mean.coef[ord],VitD.final_rlm$coef.mean$Mean.coef[ord])
+plot.CI_low<-data.frame(VitD.final_lm$coef.mean$CI_low[ord],VitD.final_rlm$coef.mean$CI_low[ord])
+plot.CI_high<-data.frame(VitD.final_lm$coef.mean$CI_high[ord],VitD.final_rlm$coef.mean$CI_high[ord])
+barp<-barplot(as.matrix(t(plot.bar)),names.arg=row.names(VitD.final_lm$coef.mean)[ord],col=c("red","blue"),beside=T,las=2,cex.names=0.65,ylim=c(-1,1),legend.text=c("Ordinary Least Squares","Tukey's Linear Model"))
+errbar(barp,t(plot.bar),yplus=t(plot.CI_high),yminus=t(plot.CI_low),add=T,type="n",cap=0.01)
+#FORWARD FEATURE SELECTION
+VitD.lm_step.forward<-BK_cv_step(formula=WITAMINA.D~.0,data=VitD.final_data,direction="forward",K = 10,scope=VitD.final_formula)
+
+
+#BACKWARD FEATURE SELECTION
+VitD.lm_step.backward<-BK_cv_step(formula=VitD.final_formula,data=VitD.final_data,direction="backward",K = 10,scope=VitD.final_formula)
+
+#LASSO REGRESSION
+
+VitD.final_data_lasso<-data.frame(numDataNorm_m_noOut[!genData.Miss,],nonGenData_m_noOut[!genData.Miss,],genData.c.bin)
+VitD.final_data_lasso<-VitD.final_data_lasso[,c(4,1:3,5:55)] # testosteron na pierwszej pozycji
+#rm_col<-c(7,30)#usuniecie FAI i hyperandrogenizmu
+#T.final_data_lasso<-T.final_data_lasso[,-rm_col]
+VitD.final_data_lasso<-VitD.final_data_lasso[!(cN.c$cl4==4 | cN.c$cl4==3 ),]#Usuniecie pacjentow z podywzszonym FSH - zaborzone funkcjonowanie jad
+#T.final_data_lasso<-T.final_data_lasso[!(cN.c$cl4==4 ),]
+VitD.final_lasso<- cv.glmnet(as.matrix(VitD.final_data_lasso[,-1]), VitD.final_data_lasso$TESTOSTERON,standardize=FALSE)
+
+#Podsumowanie korelacji Testosteronu:
+VitD.final_lasso_coef<-data.frame(as.matrix(coefficients(VitD.final_lasso,s="lambda.min")),as.matrix(coefficients(VitD.final_lasso,s="lambda.1se")))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 #W danych nie ma FAI
@@ -531,6 +606,7 @@ outputs<-predict(testosteronNN,all_d_numNorm[-TrnInd,-c(4,20:99)])
 
 #####ANALIZA ZBIORU KOBIET
 numericData_k<-numericData[kInd,]
+rownames(numericData_k)<-rownames(numericData[kInd,])
 numericData_k$INS<-log(numericData_k$INS)
 numericData_k$TESTOSTERON<-log(numericData_k$TESTOSTERON)
 numericData_k$TGC<-log(numericData_k$TGC)
@@ -585,11 +661,22 @@ biplot(numDataNorm_k_noOut_PCA,xlabs = numDataNorm_k_noOut_cut[,"4"])
 #UTWORZENIE CALEJ MACIERZY DANYCH - tylko kobiety i bez wartosci odstajacych
 all_d_k<-data.frame(single_NoNA[row.names(numDataNorm_k_noOut),])
 #Poprawienie pola WIELKOSC.MIEJSCOWOSCI
-all_d_k$WIELKOSC.MIEJSCOWOSCI<-factor(all_d_k$WIELKOSC.MIEJSCOWOSCI,levels(all_d$WIELKOSC.MIEJSCOWOSCI)[c(6,4,1,3,2,5)])
+all_d_k[c("136","137"),"WIELKOSC.MIEJSCOWOSCI"]="wies"
+all_d_k$WIELKOSC.MIEJSCOWOSCI<-factor(all_d_k$WIELKOSC.MIEJSCOWOSCI,levels(all_d$WIELKOSC.MIEJSCOWOSCI))
 
 #Poprawienie pola GR.WIEKOWA
 all_d_k[which(all_d[,"GR.WIEKOWA"]=="90 i wiecej"),"GR.WIEKOWA"]="90 lat i wiecej"
 all_d_k$GR.WIEKOWA<-factor(all_d_k$GR.WIEKOWA)
+
+#Uzupelnienie danych o cukrzycy
+all_d_k[40,"CG1.ROZPOZNANA.WCZESNIEJ.CUKRZYCA"]="nie"
+all_d_k[41,"CG1.ROZPOZNANA.WCZESNIEJ.CUKRZYCA"]="tak"
+#Uzupelnienie danych o naslonecznieniu
+all_d_k[which(all_d_k$NASLONECZNIENIE==""),"NASLONECZNIENIE"]="TAK" #Wszystkie probki brakujace byly z wrzesnia - dla ktorego NASLONECZNIENIE=TAK
+#uzupelnienie danych o nadcisnieniu
+#CZtery pacjentki dwie z gr 1 po jednej z gr1 i 3. We wszystkch grupach prawdopodobienstwo nadcisnienia jest wieksze wiec wszystkie brakujace nadcisnienia ustawione na "TAK"
+table(all_d_k$NADCISNIENIE.TETNICZE,numDataNorm_k_noOut_cut[,"4"])
+all_d_k[all_d_k$NADCISNIENIE.TETNICZE=="","NADCISNIENIE.TETNICZE"]="tak"
 
 #ZAMIANA WARTOSCI NOMINALNYCH - NIEGENETYCZNYCH - NA CIAGI BINARNE
 nominalData_Ind<-which(dataTypes=="factor")
@@ -597,12 +684,175 @@ nominalData_Ind<-which(dataTypes=="factor")
 #1 - KOD,2 - PLEC, 3- GR.WIEKOWA (zamiana na kategorie stopniowane) 5 - WOJEWODZTWO, 6 - WIELKOSC.MIEJSCOWOSCI (zamiana na kategorie stopniowane) 
 #10 - ZAKRES.WITAMINY.D 11 - VDR..CDX., 16-27 - MODELE, 28 - MIESIAC,31 - WITD - zle ustalony prog, 32-34 - OBZM, OZZM, OMPMC - brak zmiennosci
 nominalData_Ind<-nominalData_Ind[-c(1,2,3,5,6,10,11,16:28,31,32:34)]
-
 #Dane niegenetyczne
 
 nonGenData_Ind<-nominalData_Ind[c(1:4,9:12)] #wyciete dane genetyczne
 lapply(all_d_k[,nonGenData_Ind],table)
 
 nonGenData_k_Factors<-data.frame(lapply(all_d_k[,nonGenData_Ind],factor))
-row.names(nonGenData_k_Factors)<-row.names(all_d_k)
+rownames(nonGenData_k_Factors)<-rownames(all_d_k)
 lapply(nonGenData_k_Factors,table)
+nonGenData_k_noOut<-model.matrix(~ .+0, nonGenData_k_Factors) 
+
+#Dolaczenie danych o grupie wiekowej i rozmiarach miejscowosci
+nonGenData_k_noOut<-data.frame(nonGenData_k_noOut,as.numeric(all_d_k[,"WIELKOSC.MIEJSCOWOSCI"]),as.numeric(all_d_k[,"GR.WIEKOWA"]))
+names(nonGenData_k_noOut)[dim(nonGenData_k_noOut)[2]-1]<-"WIELKOSC.MIEJSCOWOSCI"
+names(nonGenData_k_noOut)[dim(nonGenData_k_noOut)[2]]<-"GR.WIEKOWA"
+nonGenData_k_noOut$GR.WIEKOWA<-normalizeZRobust(nonGenData_k_noOut$GR.WIEKOWA)
+nonGenData_k_noOut$WIELKOSC.MIEJSCOWOSCI<-normalizeZRobust(nonGenData_k_noOut$WIELKOSC.MIEJSCOWOSCI)
+
+#Skalowanie 0 i 1 do kwantylu 5% i 95% danych numerycznych
+scalingRange_k_5_95<-quantile(unlist(numDataNorm_k_noOut),probs=c(0.05,0.95))#probs=c(0.25,0.75))
+numNonGenDataNorm_k_noOut_5_95<-nonGenData_k_noOut*diff(scalingRange_k_5_95)+scalingRange_k_5_95[1]
+
+#Skalowanie 0 i 1 do kwantyli 25% i 75%
+scalingRange_k_25_75<-quantile(unlist(numDataNorm_k_noOut),probs=c(0.25,0.75))
+numNonGenDataNorm_k_noOut_25_75<-nonGenData_k_noOut*diff(scalingRange_k_25_75)+scalingRange_k_25_75[1]
+
+
+#POLCZENIE DANYCH NUMERYCZNYCH i NOMINALNYCH NIEGENETYCZNYCH
+
+numNonGen_Numerized_k_noOut_5_95<-data.frame(numDataNorm_k_noOut,numNonGenDataNorm_k_noOut_5_95)
+numNonGen_Numerized_k_noOut_25_75<-data.frame(numDataNorm_k_noOut,numNonGenDataNorm_k_noOut_25_75)
+
+
+#ANALIZY NA PELNYCH DANYCH
+
+
+numNonGen_k_5_95_HClust_wardD2<-hclust(dist(numNonGen_Numerized_k_noOut_5_95),method="ward.D2")
+plot(numNonGen_k_5_95_HClust_wardD2)
+
+numNonGen_k_25_75_HClust_wardD2<-hclust(dist(numNonGen_Numerized_k_noOut_25_75),method="ward.D2")
+plot(numNonGen_k_25_75_HClust_wardD2)
+
+
+
+#Heat map - mapa cieplna po klastrowaniu
+rowv<-as.dendrogram(hclust(dist(numNonGen_Numerized_k_noOut_5_95),method="ward.D2"))
+colv<-as.dendrogram(hclust(dist(t(numNonGen_Numerized_k_noOut_5_95)),method="ward.D2"))
+dev.new()
+heatmap.2(as.matrix(numNonGen_Numerized_k_noOut_5_95),Rowv=rowv,Colv=colv,trace="none",symm=F,symkey=F,symbreaks=T, scale="none",margins=c(10,10))
+dev.new()
+heatmap.2(as.matrix(cor(numNonGen_Numerized_k_noOut_5_95)),margins=c(10,10))
+
+numNonGen_Numerized_k_noOut_5_95_HClust_wardD2<-hclust(dist(numNonGen_Numerized_k_noOut_5_95),method="ward.D2")
+numNonGen_Numerized_k_noOut_5_95_cut<-cutree(numNonGen_Numerized_k_noOut_5_95_HClust_wardD2,k=2:10)
+numNonGen_Numerized_k_noOut_5_95_clv<-BK_clv(data=numNonGen_Numerized_k_noOut_5_95,clust=numNonGen_Numerized_k_noOut_5_95_cut,dist='euclidean')
+
+#Heat map - mapa cieplna po klastrowaniu
+rowv<-as.dendrogram(hclust(dist(numNonGen_Numerized_k_noOut_25_75),method="ward.D2"))
+colv<-as.dendrogram(hclust(dist(t(numNonGen_Numerized_k_noOut_25_75)),method="ward.D2"))
+dev.new()
+heatmap.2(as.matrix(numNonGen_Numerized_k_noOut_25_75),Rowv=rowv,Colv=colv,trace="none",symm=F,symkey=F,symbreaks=T, scale="none",margins=c(10,10))
+dev.new()
+heatmap.2(as.matrix(cor(numNonGen_Numerized_k_noOut_25_75)),margins=c(10,10))
+
+numNonGen_Numerized_k_noOut_25_75_HClust_wardD2<-hclust(dist(numNonGen_Numerized_k_noOut_25_75),method="ward.D2")
+numNonGen_Numerized_k_noOut_25_75_cut<-cutree(numNonGen_Numerized_k_noOut_25_75_HClust_wardD2,k=2:10)
+numNonGen_Numerized_k_noOut_25_75_clv<-BK_clv(data=numNonGen_Numerized_k_noOut_25_75,clust=numNonGen_Numerized_k_noOut_25_75_cut,dist='euclidean')
+
+#Wizualizacja wartosci odstajacych i klastrow
+d_k<-data.frame(md_NumData_k$md[-outliers_NumData_k_md0975], md_NumData_k$rd[-outliers_NumData_k_md0975],numDataNorm_k_noOut_cut)
+names(d_k)<-c("md","rd",paste("cl",colnames(numDataNorm_k_noOut_cut),sep=""))
+gg<-ggplot(data=d_k)
+gg+geom_point(aes(y=rd,x=md,colour=factor(cl4),shape=factor(cl4),size=5))
+
+plot(2:10,numNonGen_Numerized_k_noOut_25_75_clv$Davies.Bouldin,type="b")
+plot(2:10,numNonGen_Numerized_k_noOut_25_75_clv$Dunn,type="b")
+plot(2:10,numNonGen_Numerized_k_noOut_5_95_clv$Dunn,type="b")
+plot(2:10,numNonGen_Numerized_k_noOut_5_95_clv$Davies.Bouldin,type="b")
+
+
+
+
+
+
+
+
+
+#Dane genetyczne
+
+genData_k_Ind<-which(regexpr(pattern = "*VDR*",text = names(all_d_k))==1)
+genData_k<-data.frame(lapply(all_d_k[,genData_k_Ind],factor))
+genData_k<-genData_k[,-1]
+row.names(genData_k)<-row.names(all_d_k)
+
+#Poprawienie wartosci 
+levels(genData_k[,"VDR..BSM."])[1]<-"BB"
+levels(genData_k[,"VDR..BSM."])[2]<-"Bb"
+levels(genData_k[,"VDR..BSM."])[3]<-"bb"
+
+levels(genData_k[,"VDR..FOK."])[1]<-"FF"
+levels(genData_k[,"VDR..FOK."])[2]<-"Ff"
+levels(genData_k[,"VDR..FOK."])[3]<-"ff"
+
+genData_k.Miss<-(genData_k$VDR..APA.=="" | genData_k$VDR..TAQ.=="")
+genData_k.c<-genData_k[!genData_k.Miss,] #complete genData
+genData_k.c$VDR..TAQ.<-factor(genData_k.c$VDR..TAQ.)
+genData_k.c$VDR..APA.<-factor(genData_k.c$VDR..APA.)
+
+levels(genData_k.c$VDR..TAQ.)<-c(0,1,2)
+levels(genData_k.c$VDR..APA.)<-c(0,1,2)
+levels(genData_k.c$VDR..FOK.)<-c(0,1,2)
+levels(genData_k.c$VDR..BSM.)<-c(0,1,2)
+
+genData_k.c.bin<-BK_binGenData(genData_k.c)
+
+
+genData_k_freq<-lapply(genData_k,table)
+genData_k.c_freq<-lapply(genData_k.c,table)
+
+
+genData_k_noOut<-model.matrix(~ .+0, genData_k.c)
+
+
+
+
+#Budowa modelu liniowego
+T.final_data_k<-data.frame(numDataNorm_k_noOut[!genData_k.Miss,],nonGenData_k_noOut[!genData_k.Miss,],genData_k.c.bin)
+T.final_data_k<-T.final_data_k[,c(4,1:3,5:56)]
+rm_col_k<-c(7,29,38,42,47,50,53,56,35,30) #usunieta kolumna FAI (7), hyperandrogenizm, oraz kolumny, ktore powoduja osobliwosc macierzy
+T.final_data_k<-T.final_data_k[,-rm_col_k]
+T.final_formula_k<-formula(T.final_data_k)
+
+
+T_k.init.lm<-lm(formula=T.final_formula_k,data=T.final_data_k,subset=sample(1:193,120))#inicjalizacja parametrów dla rlm
+T_k.init.lm<-coef(T_k.init.lm)  		
+T_k.final_rlm<-BK_lm(formula=T.final_formula_k,data=T.final_data_k,K=10,init=T_k.init.lm,method="rlm")
+T_k.final_lm<-BK_lm(formula=T.final_formula_k,data=T.final_data_k,K=10,method="lm")
+
+cvfit <- glmnet::cv.glmnet(as.matrix(T.final_data_k[,-1]), T.final_data_k$TESTOSTERON)
+coef(cvfit, s = "lambda.1se")
+
+
+#Rysowanie
+par(mar=c(9,4,2,2))
+# ord<-order(T.final_lm$coef.mean$Mean.coef,decreasing=T)
+#ord<-1:length(T.final_lm$coef.mean$Mean.coef)
+ord<-order(T_k.final_rlm$coef.mean$p.value)
+plot.bar<-data.frame(T_k.final_lm$coef.mean$Mean.coef[ord],T_k.final_rlm$coef.mean$Mean.coef[ord])
+plot.CI_low<-data.frame(T_k.final_lm$coef.mean$CI_low[ord],T_k.final_rlm$coef.mean$CI_low[ord])
+plot.CI_high<-data.frame(T_k.final_lm$coef.mean$CI_high[ord],T_k.final_rlm$coef.mean$CI_high[ord])
+barp<-barplot(as.matrix(t(plot.bar)),names.arg=row.names(T_k.final_lm$coef.mean)[ord],col=c("red","blue"),beside=T,las=2,cex.names=0.65,ylim=c(-1,1),legend.text=c("Ordinary Least Squares","Tukey's Linear Model"))
+errbar(barp,t(plot.bar),yplus=t(plot.CI_high),yminus=t(plot.CI_low),add=T,type="n",cap=0.01)
+#FORWARD FEATURE SELECTION
+T_k.lm.step.forward<-BK_cv_step(formula=TESTOSTERON~.0,data=T_k.final_data,direction="forward",K = 10,scope=T_k.final_formula)
+
+
+#BACKWARD FEATURE SELECTION
+T_k.lm_step.backward<-BK_cv_step(formula=T.final_formula_k,data=T.final_data_k,direction="backward",K = 10,scope=T.final_formula_k)
+
+
+#LASSO REGRESSION
+
+T_k.final_data_lasso<-data.frame(numDataNorm_k_noOut[!genData_k.Miss,],nonGenData_k_noOut[!genData_k.Miss,],genData_k.c.bin)
+T_k.final_data_lasso<-T_k.final_data_lasso[,c(4,1:3,5:dim(T_k.final_data_lasso)[2])] # testosteron na pierwszej pozycji
+rm_col<-c(7,30)#usuniecie FAI i hyperandrogenizmu
+T_k.final_data_lasso<-T_k.final_data_lasso[,-rm_col]
+T_k.final_lasso<- cv.glmnet(as.matrix(T_k.final_data_lasso[,-1]), T_k.final_data_lasso$TESTOSTERON,standardize=FALSE)
+
+#Podsumowanie korelacji Testosteronu:
+T_k.final_lasso_coef<-data.frame(as.matrix(coefficients(T_k.final_lasso,s="lambda.min")),as.matrix(coefficients(T_k.final_lasso,s="lambda.1se")))
+
+
+
